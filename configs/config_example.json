@@ -1,0 +1,27 @@
+{
+  "_comment": "RTX5080 (16GB) 优化配置 - 160x210 图片尺寸",
+  "dataset": {
+    "scenes": [
+      "97_RZ_3586578_Aug-24-09-59-20",
+    ],
+    "num_frames": 40,
+    "image_size": 160,
+    "seed": 42
+  },
+  "training": {
+    "batch_size": 12,
+    "shuffle": true,
+    "num_workers": 4,
+    "pin_memory": true,
+    "epochs": 10,
+    "precision": "fp16"
+  },
+  "performance_notes": {
+    "gpu": "RTX5080 (16GB VRAM)",
+    "batch_size_reason": "160x210 原生尺寸，batch_size=12 可获得梯度稳定性和显存安全的平衡",
+    "num_frames_reason": "40 帧序列在 RTX5080 16GB 上显存充足（fp16 模式下），预期占用 9-11GB",
+    "fp16_reason": "混合精度训练是必要的，可节省显存 30-40%，加快训练 15-25%",
+    "estimated_vram": "~9-11 GB (batch_size=12, num_frames=40, fp16)",
+    "available_vram": "~14 GB (现有 2.1GB 被占用)"
+  }
+}
