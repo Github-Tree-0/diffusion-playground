@@ -71,8 +71,14 @@ class DDPMScheduler:
         if noise is None:
             noise = torch.randn_like(x_0)
 
-        sqrt_alphas_cumprod_t = self.sqrt_alphas_cumprod[t]
-        sqrt_one_minus_alphas_cumprod_t = self.sqrt_one_minus_alphas_cumprod[t]
+        # 确保t在CPU上以便索引
+        t_cpu = t.cpu() if t.is_cuda else t
+        sqrt_alphas_cumprod_t = self.sqrt_alphas_cumprod[t_cpu]
+        sqrt_one_minus_alphas_cumprod_t = self.sqrt_one_minus_alphas_cumprod[t_cpu]
+        
+        # 移到正确的设备
+        sqrt_alphas_cumprod_t = sqrt_alphas_cumprod_t.to(x_0.device)
+        sqrt_one_minus_alphas_cumprod_t = sqrt_one_minus_alphas_cumprod_t.to(x_0.device)
 
         # 重塑以匹配x_0的维度
         while len(sqrt_alphas_cumprod_t.shape) < len(x_0.shape):

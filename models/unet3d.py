@@ -64,9 +64,12 @@ class UNet3d(nn.Module):
 
         # 上采样层
         self.up_blocks = nn.ModuleList()
-        for i, mult in enumerate(reversed(channel_multiples[1:])):
-            channels_out = base_channels * mult
-            channels_in = base_channels * channel_multiples[len(channel_multiples) - 1 - i]
+        # Up blocks逐步降低通道数：从middle的最高通道数逐步降低
+        # reversed后是[8, 4, 2]对应[512, 256, 128]
+        for i in range(len(channel_multiples) - 1):
+            idx = len(channel_multiples) - 2 - i  # 从最后往前
+            channels_in = base_channels * channel_multiples[idx + 1]
+            channels_out = base_channels * channel_multiples[idx]
             use_attention = channels_out in [base_channels * m for m in attention_resolutions]
 
             self.up_blocks.append(
@@ -102,9 +105,10 @@ class UNet3d(nn.Module):
         # 下采样
         skips = []
         for down_block in self.down_blocks:
-            h, block_skips = down_block(h, time_emb)
-            skips.extend(block_skips)
-
+            h, block_skip = down_block(h, time_emb)
+            if block_skip:
+                skips.extend(block_skip)  # 保存所有skip
+        
         # 中间块
         h = self.middle_res_block1(h, time_emb)
         h = self.middle_attention(h)
@@ -112,7 +116,7 @@ class UNet3d(nn.Module):
 
         # 上采样
         for up_block in self.up_blocks:
-            skip = skips.pop()
+            skip = skips.pop() if skips else None
             h = up_block(h, time_emb, skip)
 
         # 输出

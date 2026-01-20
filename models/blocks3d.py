@@ -150,7 +150,7 @@ class DownBlock3d(nn.Module):
         Returns:
             output, skip_connections
         """
-        skips = []
+        skip = None
         for res_block, *att_block in zip(
             self.res_blocks,
             self.attention_blocks if self.use_attention else [None] * len(self.res_blocks),
@@ -158,10 +158,10 @@ class DownBlock3d(nn.Module):
             x = res_block(x, time_emb)
             if self.use_attention and att_block[0] is not None:
                 x = att_block[0](x)
-            skips.append(x)
+            skip = x  # 只保存最后一个res_block的输出作为skip
 
         x = self.downsample(x)
-        return x, skips
+        return x, [skip] if skip is not None else []
 
 
 class UpBlock3d(nn.Module):
@@ -191,6 +191,11 @@ class UpBlock3d(nn.Module):
             nn.Upsample(scale_factor=2, mode="nearest"),
             nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1),
         )
+        
+        # 处理skip连接后的通道调整
+        # upsample后: out_channels, skip来自down_block: in_channels
+        # concat后: out_channels + in_channels，需要投影回in_channels以匹配第一个res_block的输入
+        self.skip_proj = nn.Conv3d(out_channels + in_channels, in_channels, kernel_size=1)
 
     def forward(
         self,
@@ -201,6 +206,7 @@ class UpBlock3d(nn.Module):
         x = self.upsample(x)
         if skip is not None:
             x = torch.cat([x, skip], dim=1)
+            x = self.skip_proj(x)
 
         for res_block, *att_block in zip(
             self.res_blocks,

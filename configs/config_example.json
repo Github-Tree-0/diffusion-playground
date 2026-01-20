@@ -2,10 +2,10 @@
   "_comment": "RTX5080 (16GB) 优化配置 - 160x210 图片尺寸",
   "dataset": {
     "scenes": [
-      "97_RZ_3586578_Aug-24-09-59-20",
+      "97_RZ_3586578_Aug-24-09-59-20"
     ],
-    "num_frames": 40,
-    "image_size": 160,
+    "num_frames": 32,
+    "image_size": [160, 210],
     "seed": 42
   },
   "training": {

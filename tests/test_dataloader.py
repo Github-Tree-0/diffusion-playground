@@ -122,7 +122,7 @@ def test_dataset_creation():
             data_dir="data",
             scenes=scenes,
             num_frames=40,
-            image_size=256,
+            image_size=[160, 210],
         )
         print(f"✅ Config created")
         
@@ -164,7 +164,7 @@ def test_batch_loading():
             data_dir="data",
             scenes=scenes,
             num_frames=40,
-            image_size=256,
+            image_size=[160, 210],
             seed=42,
         )
         
@@ -188,12 +188,10 @@ def test_batch_loading():
         
         print(f"✅ Successfully loaded batch")
         print(f"   Video shape: {batch['video'].shape}")
-        print(f"   Expected shape: (2, 3, 40, 256, 256)")
-        print(f"   Scene names: {batch['scene_name']}")
-        print(f"   Frame ranges: {[f[0]}-{f[-1]} for f in batch['frame_indices']]}")
-        
+        print(f"   Expected shape: (2, 3, 40, 210, 160)")
+        print(f"   Scene names: {batch['scene_name']}")        
         # 验证形状
-        if batch['video'].shape == (2, 3, 40, 256, 256):
+        if batch['video'].shape == (2, 3, 40, 210, 160):
             print("✅ Batch shape is correct")
             return True
         else:
@@ -238,7 +236,7 @@ def test_config_file():
             data_dir="data",
             config_path=str(config_path),
             num_frames=40,
-            image_size=256,
+            image_size=[160, 210],
         )
         
         dataset = VideoDataset(config)

@@ -21,7 +21,7 @@ class VideoDatasetConfig:
         config_path: Optional[str] = None,
         scenes: Optional[List[str]] = None,
         num_frames: int = 40,
-        image_size: int = 256,
+        image_size: List[int] = [160, 210],
         seed: Optional[int] = None,
     ):
         """
@@ -254,19 +254,24 @@ class VideoDataset(Dataset):
         for path in frame_paths:
             img = Image.open(path)
             
-            # 调整大小
-            if img.size != (self.config.image_size, self.config.image_size):
-                img = img.resize(
-                    (self.config.image_size, self.config.image_size),
-                    Image.BILINEAR
-                )
-            
             # 转为 RGB（如果需要）
             if img.mode != 'RGB':
                 img = img.convert('RGB')
             
+            # 如果是160x210，补成210x210的正方形（添加黑边）
+            if img.size == (160, 210):
+                # 创建210x210的黑色背景
+                padded_img = Image.new('RGB', (210, 210), color=(0, 0, 0))
+                # 将160x210的图像居中放在黑色背景上
+                offset_x = (210 - 160) // 2  # (210 - 160) / 2 = 25
+                padded_img.paste(img, (offset_x, 0))
+                img = padded_img
+            
+            # 调整大小到128x128
+            img = img.resize((128, 128), Image.BILINEAR)
+            
             frames.append(np.array(img))
-        
+
         return np.stack(frames, axis=0)  # (T, H, W, C)
 
 
@@ -295,7 +300,7 @@ def create_default_config(
     config = {
         'scenes': scenes,
         'num_frames': 40,
-        'image_size': 256,
+        'image_size': [160, 210],
     }
     
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
