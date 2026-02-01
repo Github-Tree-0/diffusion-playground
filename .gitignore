@@ -147,6 +147,9 @@ dmypy.json
 *.sublime-project
 *.sublime-workspace
 
+# Claude Code 配置
+.claude/
+
 # ========================================
 # 操作系统
 # ========================================

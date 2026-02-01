@@ -190,7 +190,7 @@ class VideoDataset(Dataset):
         """
         # 返回场景数 * 每个场景的最大可能序列数
         # 或者简单地返回一个固定的大数字用于 epoch-based 训练
-        total = 0
+        total = 500
         for scene_index in self.scene_indices.values():
             if len(scene_index.frames) >= self.config.num_frames:
                 total += len(scene_index.frames) - self.config.num_frames + 1

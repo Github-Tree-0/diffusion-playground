@@ -1,0 +1,98 @@
+{
+  "_comment": "Heavily optimized for 15GB VRAM - reduced model size and aggressive memory optimization",
+
+  "model": {
+    "in_channels": 3,
+    "out_channels": 3,
+    "num_timesteps": 1000,
+    "base_channels": 48,
+    "time_emb_dim": 192,
+    "num_res_blocks": 2,
+    "attention_resolutions": [16, 8],
+    "channel_multiples": [1, 2, 4]
+  },
+
+  "dataset": {
+    "data_dir": "data",
+    "scenes": [
+      "97_RZ_3586578_Aug-24-09-59-20"
+    ],
+    "num_frames": 20,
+    "image_size": [160, 210],
+    "seed": 42
+  },
+
+  "dataloader": {
+    "batch_size": 8,
+    "shuffle": true,
+    "num_workers": 0,
+    "pin_memory": true,
+    "drop_last": true,
+    "persistent_workers": false
+  },
+
+  "optimizer": {
+    "type": "AdamW",
+    "lr": 1e-4,
+    "betas": [0.9, 0.999],
+    "weight_decay": 0.01,
+    "eps": 1e-8
+  },
+
+  "training": {
+    "epochs": 100,
+    "gradient_accumulation_steps": 4,
+    "max_grad_norm": 1.0,
+    "mixed_precision": {
+      "enabled": true,
+      "dtype": "float16"
+    },
+    "checkpoint": {
+      "save_every_n_epochs": 1,
+      "save_dir": "checkpoints",
+      "keep_last_n": 3
+    },
+    "logging": {
+      "log_every_n_steps": 10,
+      "log_gpu_memory": true
+    }
+  },
+
+  "hardware": {
+    "device": "cuda",
+    "allow_tf32": true
+  },
+
+  "wandb": {
+    "enabled": true,
+    "project": "video-diffusion-playground",
+    "entity": null,
+    "run_name": "vanilla-test",
+    "tags": ["15gb-optimized", "gradient-accumulation", "vanilla-implementation"],
+    "notes": "15GB VRAM optimized config with gradient accumulation",
+    "watch_model": false,
+    "sample_every_epoch": true,
+    "num_sample_frames": 16,
+    "sample_steps": 50
+  },
+
+  "performance_notes": {
+    "gpu": "15GB VRAM (optimized for limited memory)",
+    "effective_batch_size": 32,
+    "estimated_vram": "~11-13 GB with all optimizations",
+    "memory_saving_strategies": [
+      "Reduced base_channels from 64 to 48 (-25% model size)",
+      "Removed deepest layer (channel_multiples [1,2,4] instead of [1,2,4,8])",
+      "Reduced time_emb_dim from 256 to 192 (-25%)",
+      "Reduced num_frames from 32 to 20 (-37.5% temporal memory)",
+      "Small batch_size=8 with gradient_accumulation=4 for effective_batch=32",
+      "num_workers=0 to avoid CPU-GPU memory overhead",
+      "pin_memory=true for faster PCIe transfers (uses CPU memory, not VRAM)",
+      "Mixed precision FP16 for 40% memory reduction",
+      "drop_last=true for consistent batch sizes"
+    ],
+    "training_stability": "Gradient accumulation maintains large effective batch size for stable training",
+    "model_size_reduction": "~60% smaller than base config",
+    "data_memory_reduction": "~70% less memory for activations"
+  }
+}

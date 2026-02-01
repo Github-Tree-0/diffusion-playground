@@ -58,12 +58,12 @@ class DDPMScheduler:
     def add_noise(self, x_0: torch.Tensor, t: torch.Tensor, noise: torch.Tensor = None) -> tuple:
         """
         向视频添加噪声 (前向过程)
-        
+
         Args:
             x_0: 原始视频 (batch_size, channels, frames, height, width)
             t: 时间步 (batch_size,)
             noise: 高斯噪声，如果为None则随机生成
-        
+
         Returns:
             x_t: 噪声版本 (batch_size, channels, frames, height, width)
             noise: 添加的噪声
@@ -71,19 +71,14 @@ class DDPMScheduler:
         if noise is None:
             noise = torch.randn_like(x_0)
 
-        # 确保t在CPU上以便索引
-        t_cpu = t.cpu() if t.is_cuda else t
-        sqrt_alphas_cumprod_t = self.sqrt_alphas_cumprod[t_cpu]
-        sqrt_one_minus_alphas_cumprod_t = self.sqrt_one_minus_alphas_cumprod[t_cpu]
-        
-        # 移到正确的设备
-        sqrt_alphas_cumprod_t = sqrt_alphas_cumprod_t.to(x_0.device)
-        sqrt_one_minus_alphas_cumprod_t = sqrt_one_minus_alphas_cumprod_t.to(x_0.device)
+        # 直接在GPU上索引，避免CPU-GPU传输
+        device = x_0.device
+        sqrt_alphas_cumprod_t = self.sqrt_alphas_cumprod.to(device)[t]
+        sqrt_one_minus_alphas_cumprod_t = self.sqrt_one_minus_alphas_cumprod.to(device)[t]
 
-        # 重塑以匹配x_0的维度
-        while len(sqrt_alphas_cumprod_t.shape) < len(x_0.shape):
-            sqrt_alphas_cumprod_t = sqrt_alphas_cumprod_t.unsqueeze(-1)
-            sqrt_one_minus_alphas_cumprod_t = sqrt_one_minus_alphas_cumprod_t.unsqueeze(-1)
+        # 直接reshape到目标维度 (batch_size, 1, 1, 1, 1)，避免while循环
+        sqrt_alphas_cumprod_t = sqrt_alphas_cumprod_t.view(-1, 1, 1, 1, 1)
+        sqrt_one_minus_alphas_cumprod_t = sqrt_one_minus_alphas_cumprod_t.view(-1, 1, 1, 1, 1)
 
         x_t = sqrt_alphas_cumprod_t * x_0 + sqrt_one_minus_alphas_cumprod_t * noise
         return x_t, noise
@@ -96,24 +91,25 @@ class DDPMScheduler:
     ) -> torch.Tensor:
         """
         DDPM反向采样步骤
-        
+
         Args:
             x_t: 当前噪声版本
             t: 当前时间步
             predicted_noise: 模型预测的噪声
-        
+
         Returns:
             x_{t-1}: 前一时间步的版本
         """
-        posterior_mean_coef1 = self.posterior_mean_coef1[t]
-        posterior_mean_coef2 = self.posterior_mean_coef2[t]
-        posterior_variance = self.posterior_variance[t]
+        # 直接在GPU上索引，确保在正确设备
+        device = x_t.device
+        posterior_mean_coef1 = self.posterior_mean_coef1.to(device)[t]
+        posterior_mean_coef2 = self.posterior_mean_coef2.to(device)[t]
+        posterior_variance = self.posterior_variance.to(device)[t]
 
-        # 重塑系数
-        while len(posterior_mean_coef1.shape) < len(x_t.shape):
-            posterior_mean_coef1 = posterior_mean_coef1.unsqueeze(-1)
-            posterior_mean_coef2 = posterior_mean_coef2.unsqueeze(-1)
-            posterior_variance = posterior_variance.unsqueeze(-1)
+        # 直接reshape到目标维度，避免while循环
+        posterior_mean_coef1 = posterior_mean_coef1.view(-1, 1, 1, 1, 1)
+        posterior_mean_coef2 = posterior_mean_coef2.view(-1, 1, 1, 1, 1)
+        posterior_variance = posterior_variance.view(-1, 1, 1, 1, 1)
 
         # 计算均值
         mean = posterior_mean_coef1 * x_t - posterior_mean_coef2 * predicted_noise
@@ -168,14 +164,13 @@ class VideoGenerationDDPM(nn.Module):
 
         return predicted_noise
 
-    def loss(self, x_0: torch.Tensor, noise: torch.Tensor = None) -> torch.Tensor:
+    def loss(self, x_0: torch.Tensor) -> torch.Tensor:
         """
         计算训练损失
-        
+
         Args:
             x_0: 原始视频
-            noise: 可选的固定噪声
-        
+
         Returns:
             loss: MSE损失
         """
@@ -185,14 +180,13 @@ class VideoGenerationDDPM(nn.Module):
         # 随机采样时间步
         t = torch.randint(0, self.num_timesteps, (batch_size,), device=device)
 
-        # 前向传播
-        predicted_noise = self.forward(x_0, t)
+        # 生成噪声并添加到原始视频（只调用一次！）
+        x_t, noise = self.scheduler.add_noise(x_0, t)
 
-        # 实际噪声
-        if noise is None:
-            _, noise = self.scheduler.add_noise(x_0, t)
+        # 预测噪声
+        predicted_noise = self.unet(x_t, t)
 
-        # MSE损失
+        # MSE损失 - 使用同一个noise作为ground truth
         loss = nn.functional.mse_loss(predicted_noise, noise)
         return loss
 

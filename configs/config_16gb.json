@@ -1,5 +1,5 @@
 {
-  "_comment": "Complete example configuration with all available options",
+  "_comment": "RTX5080 (16GB) optimized configuration",
 
   "model": {
     "in_channels": 3,
@@ -64,24 +64,28 @@
   },
 
   "wandb": {
-    "enabled": false,
-    "project": "video-diffusion",
+    "enabled": true,
+    "project": "video-diffusion-16gb",
     "entity": null,
     "run_name": null,
-    "tags": [],
-    "notes": "",
-    "watch_model": true,
+    "tags": ["16gb", "full-model"],
+    "notes": "16GB VRAM configuration with full model",
+    "watch_model": false,
     "sample_every_epoch": true,
-    "num_sample_frames": 16,
-    "sample_steps": 50
+    "num_sample_frames": 20,
+    "sample_steps": 100
   },
 
   "performance_notes": {
-    "description": "Example configuration demonstrating all available options",
-    "backward_compatibility": "Old configs will still work - missing sections use defaults",
-    "see_also": [
-      "config_16gb.json - Optimized for 16GB VRAM",
-      "config_15gb.json - Heavily optimized for 15GB VRAM"
+    "gpu": "RTX5080 (16GB VRAM)",
+    "estimated_vram": "~14-15 GB with mixed precision",
+    "effective_batch_size": 12,
+    "features": [
+      "Full model: base_channels=64, 4 levels [1,2,4,8]",
+      "32 frames per video sequence",
+      "Mixed precision FP16 for memory efficiency",
+      "AdamW optimizer with weight decay",
+      "Batch size 12 optimized for 16GB VRAM"
     ]
   }
 }

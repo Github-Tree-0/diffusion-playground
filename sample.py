@@ -78,21 +78,45 @@ def main():
 
     # 创建模型
     print("Creating model...")
-    model = VideoGenerationDDPM(
-        in_channels=3,
-        out_channels=3,
-        num_timesteps=1000,
-        base_channels=64,
-        time_emb_dim=256,
-        num_res_blocks=2,
-        channel_multiples=(1, 2, 4, 8),
-    )
 
-    # 加载检查点
+    # 如果提供了检查点，先加载以获取配置
+    model_config = {}
     if args.model:
-        print(f"Loading model from {args.model}...")
+        print(f"Loading checkpoint from {args.model}...")
         checkpoint = torch.load(args.model, map_location="cpu")
-        model.load_state_dict(checkpoint)
+
+        # 尝试从检查点中读取模型配置
+        if isinstance(checkpoint, dict) and 'config' in checkpoint:
+            if 'model' in checkpoint['config']:
+                model_config = checkpoint['config']['model']
+                print("✅ Loaded model config from checkpoint")
+            else:
+                print("⚠️  No model config in checkpoint, using default parameters")
+        else:
+            print("⚠️  Old checkpoint format, using default parameters")
+
+    # 使用配置或默认值创建模型
+    model = VideoGenerationDDPM(
+        in_channels=model_config.get('in_channels', 3),
+        out_channels=model_config.get('out_channels', 3),
+        num_timesteps=model_config.get('num_timesteps', 1000),
+        base_channels=model_config.get('base_channels', 64),
+        time_emb_dim=model_config.get('time_emb_dim', 256),
+        num_res_blocks=model_config.get('num_res_blocks', 2),
+        attention_resolutions=tuple(model_config.get('attention_resolutions', [16, 8])),
+        channel_multiples=tuple(model_config.get('channel_multiples', [1, 2, 4, 8])),
+    )
+    print("✅ Model created")
+
+    # 加载模型权重
+    if args.model:
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            print(f"✅ Loaded model weights from checkpoint (epoch {checkpoint.get('epoch', 'unknown')})")
+        else:
+            # 旧格式检查点
+            model.load_state_dict(checkpoint)
+            print(f"✅ Loaded model weights from checkpoint")
 
     device = torch.device(args.device)
 

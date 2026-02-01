@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from .embedding import TimeEmbedding
-from .blocks3d import DownBlock3d, UpBlock3d, ResBlock3d, Attention3d
+from .blocks3d import DownBlock3d, UpBlock3d, ResBlock3d, Attention3d, get_num_groups
 
 
 class UNet3d(nn.Module):
@@ -82,8 +82,9 @@ class UNet3d(nn.Module):
                 )
             )
 
-        # 输出层
-        self.norm_out = nn.GroupNorm(32, base_channels)
+        # 输出层 - 自适应GroupNorm
+        num_groups_out = get_num_groups(base_channels)
+        self.norm_out = nn.GroupNorm(num_groups_out, base_channels)
         self.act_out = nn.SiLU()
         self.conv_out = nn.Conv3d(base_channels, out_channels, kernel_size=3, padding=1)
 
