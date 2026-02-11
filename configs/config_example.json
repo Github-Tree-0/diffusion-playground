@@ -12,6 +12,25 @@
     "channel_multiples": [1, 2, 4, 8]
   },
 
+  "diffusion": {
+    "_comment": "Flow matching formulation: z_t = t*x_0 + (1-t)*ε, v = x_0 - ε",
+    "prediction_type": "epsilon",
+    "loss_type": "epsilon",
+    "time_sampler": "logit_normal",
+    "time_sampler_params": {
+      "mu": -0.8,
+      "sigma": 0.8
+    },
+    "time_embedding_type": "continuous",
+    "_options": {
+      "prediction_type": ["epsilon", "x", "v"],
+      "loss_type": ["epsilon", "x", "v"],
+      "time_sampler": ["uniform", "logit_normal", "beta"],
+      "time_embedding_type": ["continuous", "fourier", "discrete"]
+    },
+    "_notes": "All time values are continuous t ∈ [0,1]. Based on 'Back to Basics' paper."
+  },
+
   "dataset": {
     "data_dir": "data",
     "scenes": [

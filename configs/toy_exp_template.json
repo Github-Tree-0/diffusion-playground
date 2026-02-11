@@ -1,0 +1,93 @@
+{
+  "_comment": "Template configuration for toy experiments",
+
+  "experiment_type": "toy",
+
+  "model": {
+    "_comment": "1D UNet configuration",
+    "input_dim": 64,
+    "base_channels": 64,
+    "time_emb_dim": 128,
+    "num_res_blocks": 2,
+    "channel_multiples": [1, 2, 4],
+    "_options": {
+      "input_dim": "Must match dataset.embed_dim"
+    }
+  },
+
+  "diffusion": {
+    "_comment": "Flow matching: z_t = t*x_0 + (1-t)*ε, v = x_0 - ε",
+    "prediction_type": "epsilon",
+    "loss_type": "epsilon",
+    "time_sampler": "logit_normal",
+    "time_sampler_params": {
+      "mu": -0.8,
+      "sigma": 0.8
+    },
+    "time_embedding_type": "continuous",
+    "_options": {
+      "prediction_type": ["epsilon", "x", "v"],
+      "loss_type": ["epsilon", "x", "v"],
+      "time_sampler": ["uniform", "logit_normal", "beta"]
+    }
+  },
+
+  "dataset": {
+    "_comment": "Run 'python -m toy_experiments.generate_data' first",
+    "data_dir": "toy_data",
+    "embed_dim": 64,
+    "seed": 42,
+    "_options": {
+      "embed_dim": [2, 8, 16, 64, 512]
+    }
+  },
+
+  "dataloader": {
+    "batch_size": 256,
+    "shuffle": true,
+    "num_workers": 4,
+    "pin_memory": true,
+    "drop_last": true
+  },
+
+  "optimizer": {
+    "type": "Adam",
+    "lr": 1e-3,
+    "betas": [0.9, 0.999],
+    "weight_decay": 0.0
+  },
+
+  "training": {
+    "epochs": 100,
+    "gradient_accumulation_steps": 1,
+    "max_grad_norm": 1.0,
+    "mixed_precision": {
+      "enabled": false
+    },
+    "checkpoint": {
+      "save_every_n_epochs": 20,
+      "save_dir": "checkpoints/toy"
+    },
+    "logging": {
+      "log_every_n_steps": 50
+    }
+  },
+
+  "hardware": {
+    "device": "cuda",
+    "allow_tf32": true
+  },
+
+  "wandb": {
+    "enabled": true,
+    "project": "toy-diffusion",
+    "run_name": null,
+    "tags": ["toy"]
+  },
+
+  "sampling": {
+    "num_samples": 1000,
+    "num_steps": 100,
+    "sample_every_epoch": true
+  }
+}

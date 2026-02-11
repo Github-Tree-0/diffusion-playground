@@ -1,10 +1,18 @@
 """
-训练脚本 - 用于训练视频生成模型
+训练脚本 - 支持视频生成模型和Toy实验
+
+Usage:
+    # Video generation
+    python train.py --config configs/config_example.json
+
+    # Toy experiment
+    python train.py --config configs/toy_exp_D64_epsilon.json
 """
 
 import sys
 import json
 import torch
+import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from pathlib import Path
@@ -16,8 +24,9 @@ import io
 # 添加src路径
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from models import VideoGenerationDDPM
+from models import VideoGenerationDDPM, ToyDiffusion
 from video_dataset import VideoDataset, VideoDatasetConfig
+from toy_experiments import ToyDataset, ToyDatasetConfig
 
 # 尝试导入wandb（可选依赖）
 try:
@@ -26,6 +35,13 @@ try:
 except ImportError:
     WANDB_AVAILABLE = False
     print("⚠️  wandb not installed. Run 'pip install wandb' to enable logging.")
+
+# 尝试导入matplotlib（可选，用于toy实验可视化）
+try:
+    import matplotlib.pyplot as plt
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
 
 
 def load_config(config_path: str) -> dict:
@@ -42,31 +58,31 @@ def load_config(config_path: str) -> dict:
         config = json.load(f)
 
     # 设置默认值以保证向后兼容
+    config.setdefault('experiment_type', 'video')  # 'video' or 'toy'
     config.setdefault('model', {})
     config.setdefault('dataloader', {})
     config.setdefault('optimizer', {})
     config.setdefault('training', {})
     config.setdefault('wandb', {'enabled': False})
+    config.setdefault('diffusion', {})
+    config.setdefault('sampling', {})
     config['training'].setdefault('gradient_accumulation_steps', 1)
     config['training'].setdefault('max_grad_norm', 1.0)
     config['training'].setdefault('mixed_precision', {'enabled': False})
     config['training'].setdefault('checkpoint', {})
     config['training'].setdefault('logging', {})
+    # Diffusion strategy defaults (based on "Back to Basics" paper)
+    config['diffusion'].setdefault('prediction_type', 'epsilon')
+    config['diffusion'].setdefault('loss_type', 'epsilon')
+    config['diffusion'].setdefault('time_sampler', 'logit_normal')
+    config['diffusion'].setdefault('time_sampler_params', {'mu': -0.8, 'sigma': 0.8})
+    config['diffusion'].setdefault('time_embedding_type', 'continuous')
 
     return config
 
 
-def create_optimizer(model: torch.nn.Module, optimizer_config: dict) -> optim.Optimizer:
-    """
-    从配置创建优化器
-
-    Args:
-        model: 要优化的模型
-        optimizer_config: 优化器配置
-
-    Returns:
-        optimizer: 优化器实例
-    """
+def create_optimizer(model: nn.Module, optimizer_config: dict) -> optim.Optimizer:
+    """从配置创建优化器"""
     opt_type = optimizer_config.get('type', 'Adam')
     lr = optimizer_config.get('lr', 1e-4)
 
@@ -100,6 +116,56 @@ def create_optimizer(model: torch.nn.Module, optimizer_config: dict) -> optim.Op
         raise ValueError(f"Unknown optimizer type: {opt_type}")
 
 
+# ============================================================
+# Video-specific functions
+# ============================================================
+
+def create_video_model(config: dict) -> VideoGenerationDDPM:
+    """创建视频生成模型"""
+    model_config = config.get('model', {})
+    diffusion_config = config.get('diffusion', {})
+
+    return VideoGenerationDDPM(
+        in_channels=model_config.get('in_channels', 3),
+        out_channels=model_config.get('out_channels', 3),
+        num_timesteps=model_config.get('num_timesteps', 1000),
+        prediction_type=diffusion_config.get('prediction_type', 'epsilon'),
+        loss_type=diffusion_config.get('loss_type', 'epsilon'),
+        time_sampler=diffusion_config.get('time_sampler', 'logit_normal'),
+        time_sampler_params=diffusion_config.get('time_sampler_params', {'mu': -0.8, 'sigma': 0.8}),
+        time_embedding_type=diffusion_config.get('time_embedding_type', 'continuous'),
+        base_channels=model_config.get('base_channels', 64),
+        time_emb_dim=model_config.get('time_emb_dim', 256),
+        num_res_blocks=model_config.get('num_res_blocks', 2),
+        attention_resolutions=tuple(model_config.get('attention_resolutions', [16, 8])),
+        channel_multiples=tuple(model_config.get('channel_multiples', [1, 2, 4, 8])),
+    )
+
+
+def create_video_dataloader(config: dict) -> DataLoader:
+    """创建视频数据加载器"""
+    dataset_config = VideoDatasetConfig(
+        data_dir=config['dataset'].get('data_dir', 'data'),
+        scenes=config['dataset']['scenes'],
+        num_frames=config['dataset']['num_frames'],
+        image_size=config['dataset']['image_size'],
+        seed=config['dataset'].get('seed', 42),
+    )
+
+    dataset = VideoDataset(dataset_config)
+
+    dataloader_config = config.get('dataloader', {})
+    return DataLoader(
+        dataset,
+        batch_size=dataloader_config.get('batch_size', 1),
+        shuffle=dataloader_config.get('shuffle', True),
+        num_workers=dataloader_config.get('num_workers', 0),
+        pin_memory=dataloader_config.get('pin_memory', True),
+        drop_last=dataloader_config.get('drop_last', False),
+        persistent_workers=dataloader_config.get('persistent_workers', False) and dataloader_config.get('num_workers', 0) > 0,
+    )
+
+
 def generate_sample_video(
     model: VideoGenerationDDPM,
     device: torch.device,
@@ -107,50 +173,21 @@ def generate_sample_video(
     image_size: int = 128,
     num_sampling_steps: int = 50,
 ) -> np.ndarray:
-    """
-    生成样本视频用于可视化
-
-    Args:
-        model: 训练的模型
-        device: 设备
-        num_frames: 生成的帧数
-        image_size: 图像尺寸
-        num_sampling_steps: 采样步数
-
-    Returns:
-        video: numpy数组 (T, H, W, C) 范围[0, 255]
-    """
+    """生成样本视频用于可视化"""
     model.eval()
     with torch.no_grad():
-        # 生成视频 (1, 3, T, H, W)
         shape = (1, 3, num_frames, image_size, image_size)
         generated = model.sample(shape, num_steps=num_sampling_steps, progress_bar=False)
-
-        # 转换为numpy: (1, 3, T, H, W) -> (T, H, W, 3)
         video = generated[0].cpu().permute(1, 2, 3, 0).numpy()
-
-        # Clip到[0, 1]并转换为[0, 255]
         video = np.clip(video, 0, 1)
         video = (video * 255).astype(np.uint8)
-
     model.train()
     return video
 
 
 def create_gif_from_video(video: np.ndarray, duration: int = 100) -> io.BytesIO:
-    """
-    从视频numpy数组创建GIF
-
-    Args:
-        video: (T, H, W, C) numpy数组
-        duration: 每帧持续时间（毫秒）
-
-    Returns:
-        gif_buffer: BytesIO对象包含GIF数据
-    """
+    """从视频numpy数组创建GIF"""
     frames = [Image.fromarray(frame) for frame in video]
-
-    # 保存为GIF到BytesIO
     gif_buffer = io.BytesIO()
     frames[0].save(
         gif_buffer,
@@ -164,25 +201,137 @@ def create_gif_from_video(video: np.ndarray, duration: int = 100) -> io.BytesIO:
     return gif_buffer
 
 
+# ============================================================
+# Toy experiment-specific functions
+# ============================================================
+
+def create_toy_model(config: dict) -> ToyDiffusion:
+    """创建Toy实验模型"""
+    model_config = config.get('model', {})
+    diffusion_config = config.get('diffusion', {})
+
+    return ToyDiffusion(
+        input_dim=model_config.get('input_dim', 64),
+        hidden_dim=model_config.get('hidden_dim', 256),
+        num_layers=model_config.get('num_layers', 5),
+        time_dim=model_config.get('time_dim', 64),
+        prediction_type=diffusion_config.get('prediction_type', 'epsilon'),
+        loss_type=diffusion_config.get('loss_type', 'epsilon'),
+        time_sampler=diffusion_config.get('time_sampler', 'logit_normal'),
+        time_sampler_params=diffusion_config.get('time_sampler_params', {'mu': -0.8, 'sigma': 0.8}),
+    )
+
+
+def create_toy_dataloader(config: dict) -> DataLoader:
+    """创建Toy数据加载器"""
+    dataset_config = ToyDatasetConfig(
+        data_dir=config['dataset'].get('data_dir', 'toy_data'),
+        embed_dim=config['dataset'].get('embed_dim', 64),
+        seed=config['dataset'].get('seed', 42),
+    )
+
+    dataset = ToyDataset(dataset_config, split='train')
+
+    dataloader_config = config.get('dataloader', {})
+    return DataLoader(
+        dataset,
+        batch_size=dataloader_config.get('batch_size', 256),
+        shuffle=dataloader_config.get('shuffle', True),
+        num_workers=dataloader_config.get('num_workers', 0),
+        pin_memory=dataloader_config.get('pin_memory', True),
+        drop_last=dataloader_config.get('drop_last', True),
+    )
+
+
+def generate_toy_samples_plot(
+    model: ToyDiffusion,
+    dataset: ToyDataset,
+    device: torch.device,
+    num_samples: int = 1000,
+    num_steps: int = 100,
+) -> io.BytesIO:
+    """
+    生成Toy样本并创建2D可视化图
+
+    Returns:
+        BytesIO对象包含PNG图像数据
+    """
+    if not MATPLOTLIB_AVAILABLE:
+        return None
+
+    model.eval()
+    with torch.no_grad():
+        # 生成样本
+        samples = model.sample(num_samples, num_steps=num_steps, device=device)
+        samples = samples.cpu().numpy()
+
+        # 获取projection matrix
+        projection = dataset.get_projection().numpy()
+
+        # Project to 2D
+        if samples.shape[1] > 2:
+            samples_2d = samples @ projection
+        else:
+            samples_2d = samples
+
+        # 获取参考数据
+        ref_indices = np.random.choice(len(dataset), min(1000, len(dataset)), replace=False)
+        ref_data = np.stack([dataset[i]['data'].numpy() for i in ref_indices])
+        if ref_data.shape[1] > 2:
+            ref_2d = ref_data @ projection
+        else:
+            ref_2d = ref_data
+
+    model.train()
+
+    # 创建图
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.scatter(ref_2d[:, 0], ref_2d[:, 1], c='gray', alpha=0.3, s=10, label='Reference')
+    ax.scatter(samples_2d[:, 0], samples_2d[:, 1], c='blue', alpha=0.5, s=10, label='Generated')
+    ax.set_title(f'Generated Samples (D={dataset.get_embed_dim()})')
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    ax.legend()
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(-5, 5)
+    ax.set_ylim(-5, 5)
+
+    # 保存到BytesIO
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=100)
+    buf.seek(0)
+    plt.close()
+
+    return buf
+
+
+# ============================================================
+# Unified training function
+# ============================================================
+
 def train(
-    model: VideoGenerationDDPM,
+    model: nn.Module,
     train_loader: DataLoader,
     optimizer: optim.Optimizer,
     device: torch.device,
     config: dict,
     save_dir: str = "checkpoints",
+    dataset: object = None,  # For toy experiment visualization
 ):
     """
-    训练模型 with gradient accumulation and mixed precision
+    统一训练函数 - 支持视频和Toy实验
 
     Args:
-        model: 视频生成DDPM模型
-        train_loader: 训练数据加载器
+        model: 模型 (VideoGenerationDDPM 或 ToyDiffusion)
+        train_loader: 数据加载器
         optimizer: 优化器
         device: 训练设备
-        config: 完整训练配置
+        config: 完整配置
         save_dir: 检查点保存目录
+        dataset: 数据集对象（用于toy实验可视化）
     """
+    experiment_type = config.get('experiment_type', 'video')
     save_dir = Path(save_dir)
     save_dir.mkdir(exist_ok=True, parents=True)
 
@@ -198,19 +347,19 @@ def train(
     amp_dtype = config['training'].get('mixed_precision', {}).get('dtype', 'float16')
     dtype = torch.float16 if amp_dtype == 'float16' else torch.bfloat16
 
-    scaler = torch.amp.GradScaler('cuda') if use_amp else None
+    scaler = torch.amp.GradScaler('cuda') if use_amp and device.type == 'cuda' else None
 
     # WandB设置
     use_wandb = config.get('wandb', {}).get('enabled', False) and WANDB_AVAILABLE
-    sample_every_epoch = config.get('wandb', {}).get('sample_every_epoch', True)
-    num_sample_frames = config.get('wandb', {}).get('num_sample_frames', 16)
-    sample_steps = config.get('wandb', {}).get('sample_steps', 50)
+    sample_every_epoch = config.get('sampling', {}).get('sample_every_epoch', True) or \
+                         config.get('wandb', {}).get('sample_every_epoch', True)
 
     print(f"\n📊 Training Configuration:")
+    print(f"   Experiment Type: {experiment_type}")
     print(f"   Epochs: {epochs}")
     print(f"   Gradient Accumulation: {gradient_accumulation_steps} steps")
     print(f"   Effective Batch Size: {train_loader.batch_size * gradient_accumulation_steps}")
-    print(f"   Mixed Precision: {use_amp} ({amp_dtype if use_amp else 'N/A'})")
+    print(f"   Mixed Precision: {use_amp}")
     print(f"   Max Grad Norm: {max_grad_norm}")
     print(f"   WandB Logging: {use_wandb}")
 
@@ -218,33 +367,36 @@ def train(
     model.train()
 
     for epoch in range(epochs):
-        # 使用tensor累积loss，避免频繁的GPU-CPU同步（.item()调用）
         loss_accumulator = []
         optimizer.zero_grad()
 
         for batch_idx, batch in enumerate(train_loader):
-            # 获取视频数据
-            if isinstance(batch, dict):
-                videos = batch['video'].to(device)
-            else:
-                videos = batch.to(device)
+            # 获取数据 - 根据实验类型
+            if experiment_type == 'toy':
+                if isinstance(batch, dict):
+                    data = batch['data'].to(device)
+                else:
+                    data = batch.to(device)
+            else:  # video
+                if isinstance(batch, dict):
+                    data = batch['video'].to(device)
+                else:
+                    data = batch.to(device)
 
             # 混合精度前向传播
-            with torch.amp.autocast('cuda', enabled=use_amp, dtype=dtype):
-                loss = model.loss(videos)
-                # 为梯度累积缩放loss
+            with torch.amp.autocast('cuda', enabled=use_amp and device.type == 'cuda', dtype=dtype):
+                loss = model.loss(data)
                 loss = loss / gradient_accumulation_steps
 
             # 反向传播
-            if use_amp:
+            if scaler is not None:
                 scaler.scale(loss).backward()
             else:
                 loss.backward()
 
             # 每gradient_accumulation_steps更新一次权重
             if (batch_idx + 1) % gradient_accumulation_steps == 0:
-                if use_amp:
-                    # 取消缩放并梯度裁剪
+                if scaler is not None:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
                     scaler.step(optimizer)
@@ -255,12 +407,11 @@ def train(
 
                 optimizer.zero_grad()
 
-            # 累积loss tensor，避免.item()同步（性能优化）
+            # 累积loss
             loss_accumulator.append((loss.detach() * gradient_accumulation_steps).cpu())
 
-            # WandB logging每个accumulation cycle
+            # WandB step logging
             if use_wandb and (batch_idx + 1) % gradient_accumulation_steps == 0:
-                # 只在需要log时才同步最近的loss
                 recent_loss = loss_accumulator[-1].item()
                 step = epoch * len(train_loader) + batch_idx
                 wandb.log({
@@ -270,64 +421,65 @@ def train(
                 }, step=step)
 
             if (batch_idx + 1) % log_every == 0:
-                # 计算累积的平均loss（一次性同步）
                 avg_loss = torch.stack(loss_accumulator).mean().item()
-                current_step = batch_idx + 1
-                total_steps = len(train_loader)
                 print(
                     f"Epoch [{epoch + 1}/{epochs}] "
-                    f"Batch [{current_step}/{total_steps}] "
+                    f"Batch [{batch_idx + 1}/{len(train_loader)}] "
                     f"Loss: {avg_loss:.6f}"
                 )
 
-                # Log GPU memory if enabled
-                if config['training'].get('logging', {}).get('log_gpu_memory', False):
-                    if torch.cuda.is_available():
-                        allocated = torch.cuda.memory_allocated(device) / 1024**3
-                        reserved = torch.cuda.memory_reserved(device) / 1024**3
-                        print(f"   GPU Memory: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
-
-        # Epoch结束：计算平均loss
+        # Epoch结束
         avg_loss = torch.stack(loss_accumulator).mean().item()
         print(f"✅ Epoch [{epoch + 1}/{epochs}] Average loss: {avg_loss:.6f}")
 
-        # WandB logging每个epoch
+        # WandB epoch logging
         if use_wandb:
             epoch_metrics = {
                 'train/epoch_loss': avg_loss,
                 'train/epoch': epoch + 1,
             }
 
-            # 生成样本视频
+            # 生成样本
             if sample_every_epoch:
-                print(f"🎬 Generating sample video...")
-                try:
-                    # 获取图像尺寸
-                    image_size = config['dataset']['image_size']
-                    if isinstance(image_size, list):
-                        image_size = 128  # 使用固定的128x128用于生成
+                if experiment_type == 'toy':
+                    print(f"📊 Generating toy samples...")
+                    try:
+                        sampling_config = config.get('sampling', {})
+                        plot_buf = generate_toy_samples_plot(
+                            model, dataset, device,
+                            num_samples=sampling_config.get('num_samples', 1000),
+                            num_steps=sampling_config.get('num_steps', 100),
+                        )
+                        if plot_buf:
+                            epoch_metrics['samples/generated'] = wandb.Image(
+                                Image.open(plot_buf),
+                                caption=f"Epoch {epoch + 1}"
+                            )
+                            print(f"✅ Sample plot generated and logged")
+                    except Exception as e:
+                        print(f"⚠️  Failed to generate sample: {e}")
+                else:  # video
+                    print(f"🎬 Generating sample video...")
+                    try:
+                        wandb_config = config.get('wandb', {})
+                        image_size = config['dataset'].get('image_size', 128)
+                        if isinstance(image_size, list):
+                            image_size = 128
 
-                    # 生成视频
-                    sample_video = generate_sample_video(
-                        model,
-                        device,
-                        num_frames=num_sample_frames,
-                        image_size=image_size,
-                        num_sampling_steps=sample_steps
-                    )
+                        sample_video = generate_sample_video(
+                            model, device,
+                            num_frames=wandb_config.get('num_sample_frames', 16),
+                            image_size=image_size,
+                            num_sampling_steps=wandb_config.get('sample_steps', 50)
+                        )
 
-                    # 创建GIF
-                    gif_buffer = create_gif_from_video(sample_video, duration=100)
-
-                    # 上传到wandb
-                    epoch_metrics['samples/generated_video'] = wandb.Video(
-                        np.array([sample_video.transpose(0, 3, 1, 2)]),  # (1, T, C, H, W)
-                        fps=10,
-                        format="gif"
-                    )
-                    print(f"✅ Sample video generated and logged to wandb")
-                except Exception as e:
-                    print(f"⚠️  Failed to generate sample: {e}")
+                        epoch_metrics['samples/generated_video'] = wandb.Video(
+                            np.array([sample_video.transpose(0, 3, 1, 2)]),
+                            fps=10, format="gif"
+                        )
+                        print(f"✅ Sample video generated and logged")
+                    except Exception as e:
+                        print(f"⚠️  Failed to generate sample: {e}")
 
             wandb.log(epoch_metrics, step=epoch)
 
@@ -345,7 +497,7 @@ def train(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train video generation model")
+    parser = argparse.ArgumentParser(description="Train diffusion model (video or toy)")
     parser.add_argument("--config", type=str, default="configs/config_example.json",
                        help="Config file path")
     parser.add_argument("--device", type=str, default=None,
@@ -361,19 +513,10 @@ def main():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
     config = load_config(args.config)
+    experiment_type = config.get('experiment_type', 'video')
 
     print(f"✅ Config loaded from {config_path}")
-    print(f"\n📋 Model Configuration:")
-    print(f"   Base Channels: {config['model'].get('base_channels', 64)}")
-    print(f"   Channel Multiples: {config['model'].get('channel_multiples', [1,2,4,8])}")
-    print(f"   Num Timesteps: {config['model'].get('num_timesteps', 1000)}")
-    print(f"\n📋 Dataset Configuration:")
-    print(f"   Scenes: {config['dataset']['scenes']}")
-    print(f"   Num frames: {config['dataset']['num_frames']}")
-    print(f"   Image size: {config['dataset']['image_size']}")
-    print(f"\n📋 DataLoader Configuration:")
-    print(f"   Batch size: {config['dataloader'].get('batch_size', 1)}")
-    print(f"   Num workers: {config['dataloader'].get('num_workers', 0)}")
+    print(f"📋 Experiment Type: {experiment_type}")
 
     # ============================================================
     # 2. 设置设备
@@ -384,75 +527,72 @@ def main():
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n🖥️  Using device: {device}")
 
-    # Enable TF32 for faster training on Ampere GPUs
     if device.type == 'cuda' and config.get('hardware', {}).get('allow_tf32', True):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         print(f"   TF32 enabled for faster training")
 
     # ============================================================
-    # 3. 创建模型 (从配置中读取所有参数)
+    # 3. 创建模型和数据加载器 (根据实验类型)
     # ============================================================
-    print("\n🧠 Creating model...")
-    model_config = config.get('model', {})
+    diffusion_config = config.get('diffusion', {})
 
-    model = VideoGenerationDDPM(
-        in_channels=model_config.get('in_channels', 3),
-        out_channels=model_config.get('out_channels', 3),
-        num_timesteps=model_config.get('num_timesteps', 1000),
-        base_channels=model_config.get('base_channels', 64),
-        time_emb_dim=model_config.get('time_emb_dim', 256),
-        num_res_blocks=model_config.get('num_res_blocks', 2),
-        attention_resolutions=tuple(model_config.get('attention_resolutions', [16, 8])),
-        channel_multiples=tuple(model_config.get('channel_multiples', [1, 2, 4, 8])),
-    )
+    print(f"\n📋 Diffusion Strategy (Flow Matching):")
+    print(f"   Prediction type: {diffusion_config.get('prediction_type', 'epsilon')}")
+    print(f"   Loss type: {diffusion_config.get('loss_type', 'epsilon')}")
+    print(f"   Time sampler: {diffusion_config.get('time_sampler', 'logit_normal')}")
+    print(f"   Formulation: z_t = t*x_0 + (1-t)*ε, v = x_0 - ε")
 
-    # Calculate and print model size
+    if experiment_type == 'toy':
+        print("\n🧪 Creating toy experiment model...")
+        model = create_toy_model(config)
+        train_loader = create_toy_dataloader(config)
+        # 获取dataset用于可视化
+        dataset = train_loader.dataset
+
+        print(f"\n📋 Model Configuration:")
+        print(f"   Input dim: {config['model'].get('input_dim', 64)}")
+        print(f"   Hidden dim: {config['model'].get('hidden_dim', 256)}")
+        print(f"   Num layers: {config['model'].get('num_layers', 5)}")
+        print(f"\n📋 Dataset Configuration:")
+        print(f"   Embed dim: {config['dataset'].get('embed_dim', 64)}")
+        print(f"   Samples: {len(dataset)}")
+    else:
+        print("\n🎬 Creating video generation model...")
+        model = create_video_model(config)
+        train_loader = create_video_dataloader(config)
+        dataset = train_loader.dataset
+
+        print(f"\n📋 Model Configuration:")
+        print(f"   Base Channels: {config['model'].get('base_channels', 64)}")
+        print(f"   Channel Multiples: {config['model'].get('channel_multiples', [1,2,4,8])}")
+        print(f"\n📋 Dataset Configuration:")
+        print(f"   Scenes: {config['dataset'].get('scenes', [])}")
+        print(f"   Num frames: {config['dataset'].get('num_frames', 32)}")
+
+    # Model size
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"✅ Model created")
+    print(f"\n✅ Model created")
     print(f"   Total parameters: {total_params:,}")
     print(f"   Trainable parameters: {trainable_params:,}")
     print(f"   Model size: ~{total_params * 4 / 1024**2:.1f} MB (FP32)")
 
-    # ============================================================
-    # 4. 创建数据加载器
-    # ============================================================
-    print("\n📦 Creating dataset...")
-    dataset_config = VideoDatasetConfig(
-        data_dir=config['dataset'].get('data_dir', 'data'),
-        scenes=config['dataset']['scenes'],
-        num_frames=config['dataset']['num_frames'],
-        image_size=config['dataset']['image_size'],
-        seed=config['dataset'].get('seed', 42),
-    )
-
-    dataset = VideoDataset(dataset_config)
-    print(f"✅ Dataset created with {len(dataset)} samples")
-
-    dataloader_config = config.get('dataloader', {})
-    train_loader = DataLoader(
-        dataset,
-        batch_size=dataloader_config.get('batch_size', 1),
-        shuffle=dataloader_config.get('shuffle', True),
-        num_workers=dataloader_config.get('num_workers', 0),
-        pin_memory=dataloader_config.get('pin_memory', True),  # Default True for faster PCIe transfers
-        drop_last=dataloader_config.get('drop_last', False),
-        persistent_workers=dataloader_config.get('persistent_workers', False) and dataloader_config.get('num_workers', 0) > 0,
-    )
-    print(f"✅ DataLoader created")
+    print(f"\n📋 DataLoader Configuration:")
+    print(f"   Batch size: {config['dataloader'].get('batch_size', 1)}")
+    print(f"   Num workers: {config['dataloader'].get('num_workers', 0)}")
 
     # ============================================================
-    # 5. 创建优化器 (从配置中读取)
+    # 4. 创建优化器
     # ============================================================
     optimizer_config = config.get('optimizer', {})
     optimizer = create_optimizer(model, optimizer_config)
-    print(f"✅ Optimizer created: {optimizer_config.get('type', 'Adam')}")
+    print(f"\n✅ Optimizer created: {optimizer_config.get('type', 'Adam')}")
     print(f"   Learning rate: {optimizer_config.get('lr', 1e-4)}")
     print(f"   Weight decay: {optimizer_config.get('weight_decay', 0.0)}")
 
     # ============================================================
-    # 6. 初始化WandB
+    # 5. 初始化WandB
     # ============================================================
     wandb_config = config.get('wandb', {})
     if wandb_config.get('enabled', False):
@@ -462,11 +602,13 @@ def main():
         else:
             print("\n🔗 Initializing WandB...")
             wandb.init(
-                project=wandb_config.get('project', 'video-diffusion'),
+                project=wandb_config.get('project', 'diffusion'),
                 entity=wandb_config.get('entity', None),
                 name=wandb_config.get('run_name', None),
                 config={
+                    'experiment_type': experiment_type,
                     'model': config['model'],
+                    'diffusion': config['diffusion'],
                     'dataset': config['dataset'],
                     'dataloader': config['dataloader'],
                     'optimizer': config['optimizer'],
@@ -476,13 +618,12 @@ def main():
                 tags=wandb_config.get('tags', []),
                 notes=wandb_config.get('notes', ''),
             )
-            # Watch model (track gradients and parameters)
             if wandb_config.get('watch_model', True):
                 wandb.watch(model, log='all', log_freq=100)
             print("✅ WandB initialized")
 
     # ============================================================
-    # 7. 训练
+    # 6. 训练
     # ============================================================
     save_dir = config['training'].get('checkpoint', {}).get('save_dir', 'checkpoints')
     print(f"\n🚀 Starting training...")
@@ -494,11 +635,11 @@ def main():
             optimizer,
             device,
             config,
-            save_dir
+            save_dir,
+            dataset=dataset,
         )
         print("\n✅ Training completed!")
     finally:
-        # 确保wandb properly关闭
         if wandb_config.get('enabled', False) and WANDB_AVAILABLE:
             wandb.finish()
             print("🔗 WandB run finished")

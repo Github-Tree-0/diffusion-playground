@@ -1,15 +1,21 @@
 import torch
 import torch.nn as nn
-from .embedding import TimeEmbedding
+from typing import Literal
+from .embedding import TimeEmbedding, TimeEmbeddingType
 from .blocks3d import DownBlock3d, UpBlock3d, ResBlock3d, Attention3d, get_num_groups
 
 
 class UNet3d(nn.Module):
     """
     3D UNet用于视频生成。
-    
+
     输入: (batch_size, in_channels, frames, height, width)
     输出: (batch_size, out_channels, frames, height, width)
+
+    时间输入:
+    - time_embedding_type="continuous": t ∈ [0, 1] (float)
+    - time_embedding_type="fourier": t ∈ [0, 1] (float), random Fourier features
+    - time_embedding_type="discrete": t ∈ {0, 1, ..., T-1} (int)
     """
     def __init__(
         self,
@@ -20,6 +26,7 @@ class UNet3d(nn.Module):
         num_res_blocks: int = 2,
         attention_resolutions: tuple = (16, 8),
         channel_multiples: tuple = (1, 2, 4, 8),
+        time_embedding_type: TimeEmbeddingType = "continuous",
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -27,9 +34,14 @@ class UNet3d(nn.Module):
         self.base_channels = base_channels
         self.time_emb_dim = time_emb_dim
         self.channel_multiples = channel_multiples
+        self.time_embedding_type = time_embedding_type
 
         # 时间嵌入
-        self.time_embedding = TimeEmbedding(time_emb_dim, time_emb_dim * 4)
+        self.time_embedding = TimeEmbedding(
+            time_emb_dim,
+            time_emb_dim * 4,
+            embedding_type=time_embedding_type,
+        )
 
         # 初始卷积
         self.conv_in = nn.Conv3d(in_channels, base_channels, kernel_size=3, padding=1)
