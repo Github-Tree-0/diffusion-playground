@@ -188,3 +188,4 @@ config.local.json
 # 数据加载器特定的临时文件
 # ========================================
 config/test_config.json
+toy_data/

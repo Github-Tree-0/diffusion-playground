@@ -36,8 +36,10 @@ except ImportError:
     WANDB_AVAILABLE = False
     print("⚠️  wandb not installed. Run 'pip install wandb' to enable logging.")
 
-# 尝试导入matplotlib（可选，用于toy实验可视化）
+# 导入matplotlib（用于toy实验可视化，使用Agg后端支持无显示器的服务器）
 try:
+    import matplotlib
+    matplotlib.use('Agg')  # 必须在import pyplot之前设置
     import matplotlib.pyplot as plt
     MATPLOTLIB_AVAILABLE = True
 except ImportError:
@@ -212,13 +214,15 @@ def create_toy_model(config: dict) -> ToyDiffusion:
 
     return ToyDiffusion(
         input_dim=model_config.get('input_dim', 64),
-        hidden_dim=model_config.get('hidden_dim', 256),
-        num_layers=model_config.get('num_layers', 5),
-        time_dim=model_config.get('time_dim', 64),
         prediction_type=diffusion_config.get('prediction_type', 'epsilon'),
         loss_type=diffusion_config.get('loss_type', 'epsilon'),
         time_sampler=diffusion_config.get('time_sampler', 'logit_normal'),
         time_sampler_params=diffusion_config.get('time_sampler_params', {'mu': -0.8, 'sigma': 0.8}),
+        time_embedding_type=diffusion_config.get('time_embedding_type', 'continuous'),
+        base_channels=model_config.get('base_channels', 64),
+        time_emb_dim=model_config.get('time_emb_dim', 128),
+        num_res_blocks=model_config.get('num_res_blocks', 2),
+        channel_multiples=tuple(model_config.get('channel_multiples', [1, 2, 4])),
     )
 
 
@@ -256,9 +260,6 @@ def generate_toy_samples_plot(
     Returns:
         BytesIO对象包含PNG图像数据
     """
-    if not MATPLOTLIB_AVAILABLE:
-        return None
-
     model.eval()
     with torch.no_grad():
         # 生成样本
@@ -299,9 +300,9 @@ def generate_toy_samples_plot(
 
     # 保存到BytesIO
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=100)
+    fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
     buf.seek(0)
-    plt.close()
+    plt.close(fig)
 
     return buf
 
@@ -351,8 +352,10 @@ def train(
 
     # WandB设置
     use_wandb = config.get('wandb', {}).get('enabled', False) and WANDB_AVAILABLE
-    sample_every_epoch = config.get('sampling', {}).get('sample_every_epoch', True) or \
-                         config.get('wandb', {}).get('sample_every_epoch', True)
+
+    # Visualization设置
+    sampling_config = config.get('sampling', {})
+    visualize_every = sampling_config.get('visualize_every_n_epochs', 0)  # 0 = disabled
 
     print(f"\n📊 Training Configuration:")
     print(f"   Experiment Type: {experiment_type}")
@@ -413,12 +416,11 @@ def train(
             # WandB step logging
             if use_wandb and (batch_idx + 1) % gradient_accumulation_steps == 0:
                 recent_loss = loss_accumulator[-1].item()
-                step = epoch * len(train_loader) + batch_idx
+                global_step = epoch * len(train_loader) + batch_idx
                 wandb.log({
                     'train/loss': recent_loss,
                     'train/epoch': epoch + 1,
-                    'train/step': step,
-                }, step=step)
+                }, step=global_step)
 
             if (batch_idx + 1) % log_every == 0:
                 avg_loss = torch.stack(loss_accumulator).mean().item()
@@ -433,55 +435,63 @@ def train(
         print(f"✅ Epoch [{epoch + 1}/{epochs}] Average loss: {avg_loss:.6f}")
 
         # WandB epoch logging
+        epoch_metrics = {}
         if use_wandb:
             epoch_metrics = {
                 'train/epoch_loss': avg_loss,
                 'train/epoch': epoch + 1,
             }
 
-            # 生成样本
-            if sample_every_epoch:
-                if experiment_type == 'toy':
-                    print(f"📊 Generating toy samples...")
-                    try:
-                        sampling_config = config.get('sampling', {})
-                        plot_buf = generate_toy_samples_plot(
-                            model, dataset, device,
-                            num_samples=sampling_config.get('num_samples', 1000),
-                            num_steps=sampling_config.get('num_steps', 100),
-                        )
-                        if plot_buf:
-                            epoch_metrics['samples/generated'] = wandb.Image(
-                                Image.open(plot_buf),
-                                caption=f"Epoch {epoch + 1}"
-                            )
-                            print(f"✅ Sample plot generated and logged")
-                    except Exception as e:
-                        print(f"⚠️  Failed to generate sample: {e}")
-                else:  # video
-                    print(f"🎬 Generating sample video...")
-                    try:
-                        wandb_config = config.get('wandb', {})
-                        image_size = config['dataset'].get('image_size', 128)
-                        if isinstance(image_size, list):
-                            image_size = 128
+        # 可视化（不依赖wandb，保存到磁盘）
+        should_visualize = visualize_every > 0 and (epoch + 1) % visualize_every == 0
+        if should_visualize:
+            if experiment_type == 'toy':
+                print(f"📊 Generating toy samples visualization...")
+                plot_buf = generate_toy_samples_plot(
+                    model, dataset, device,
+                    num_samples=sampling_config.get('num_samples', 1000),
+                    num_steps=sampling_config.get('num_steps', 100),
+                )
+                # 保存到磁盘
+                vis_dir = save_dir / "visualizations"
+                vis_dir.mkdir(exist_ok=True)
+                vis_path = vis_dir / f"samples_epoch_{epoch + 1}.png"
+                with open(vis_path, 'wb') as f:
+                    f.write(plot_buf.getvalue())
+                print(f"✅ Visualization saved to {vis_path}")
 
-                        sample_video = generate_sample_video(
-                            model, device,
-                            num_frames=wandb_config.get('num_sample_frames', 16),
-                            image_size=image_size,
-                            num_sampling_steps=wandb_config.get('sample_steps', 50)
-                        )
+                # 同时上传到wandb
+                if use_wandb:
+                    plot_buf.seek(0)
+                    epoch_metrics['samples/generated'] = wandb.Image(
+                        Image.open(plot_buf),
+                        caption=f"Epoch {epoch + 1}"
+                    )
+            else:  # video
+                print(f"🎬 Generating sample video...")
+                wandb_config = config.get('wandb', {})
+                image_size = config['dataset'].get('image_size', 128)
+                if isinstance(image_size, list):
+                    image_size = 128
 
-                        epoch_metrics['samples/generated_video'] = wandb.Video(
-                            np.array([sample_video.transpose(0, 3, 1, 2)]),
-                            fps=10, format="gif"
-                        )
-                        print(f"✅ Sample video generated and logged")
-                    except Exception as e:
-                        print(f"⚠️  Failed to generate sample: {e}")
+                sample_video = generate_sample_video(
+                    model, device,
+                    num_frames=wandb_config.get('num_sample_frames', 16),
+                    image_size=image_size,
+                    num_sampling_steps=wandb_config.get('sample_steps', 50)
+                )
 
-            wandb.log(epoch_metrics, step=epoch)
+                if use_wandb:
+                    epoch_metrics['samples/generated_video'] = wandb.Video(
+                        np.array([sample_video.transpose(0, 3, 1, 2)]),
+                        fps=10, format="gif"
+                    )
+                print(f"✅ Sample video generated")
+
+        if use_wandb and epoch_metrics:
+            # 用global_step保持单调递增
+            global_step = (epoch + 1) * len(train_loader) - 1
+            wandb.log(epoch_metrics, step=global_step)
 
         # 保存检查点
         if (epoch + 1) % save_every == 0:
@@ -517,6 +527,14 @@ def main():
 
     print(f"✅ Config loaded from {config_path}")
     print(f"📋 Experiment Type: {experiment_type}")
+
+    # 检查可视化依赖
+    visualize_every = config.get('sampling', {}).get('visualize_every_n_epochs', 0)
+    if visualize_every > 0 and experiment_type == 'toy' and not MATPLOTLIB_AVAILABLE:
+        raise ImportError(
+            "matplotlib is required for toy experiment visualization. "
+            "Install with: pip install matplotlib"
+        )
 
     # ============================================================
     # 2. 设置设备

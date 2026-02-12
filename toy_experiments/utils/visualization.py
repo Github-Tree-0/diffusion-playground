@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import List, Dict, Optional, Union
 import json
 
-# Try to import matplotlib (optional for headless servers)
+# Import matplotlib with Agg backend for headless servers
 try:
+    import matplotlib
+    matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
     MATPLOTLIB_AVAILABLE = True

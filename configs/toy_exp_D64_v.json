@@ -38,13 +38,13 @@
 
   "optimizer": {
     "type": "Adam",
-    "lr": 1e-3,
+    "lr": 1e-4,
     "betas": [0.9, 0.999],
     "weight_decay": 0.0
   },
 
   "training": {
-    "epochs": 100,
+    "epochs": 500,
     "gradient_accumulation_steps": 1,
     "max_grad_norm": 1.0,
     "mixed_precision": {
@@ -74,6 +74,6 @@
   "sampling": {
     "num_samples": 1000,
     "num_steps": 100,
-    "sample_every_epoch": true
+    "visualize_every_n_epochs": 10
   }
 }
