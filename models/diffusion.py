@@ -383,7 +383,8 @@ class VideoGenerationDDPM(nn.Module):
             num_steps = 50
 
         z_t = torch.randn(shape, device=device)
-        timesteps = self._make_timesteps(0.0, 1.0, num_steps, batch_size, device)
+        t_start = 1.0 / num_steps
+        timesteps = self._make_timesteps(t_start, 1.0, num_steps, batch_size, device)
 
         iterator = range(num_steps)
         if progress_bar:
@@ -422,7 +423,8 @@ class VideoGenerationDDPM(nn.Module):
             num_steps = 50
 
         z_t = torch.randn(shape, device=device)
-        timesteps = self._make_timesteps(0.0, 1.0, num_steps, batch_size, device)
+        t_start = 1.0 / num_steps
+        timesteps = self._make_timesteps(t_start, 1.0, num_steps, batch_size, device)
 
         iterator = range(num_steps)
         if progress_bar:
@@ -667,7 +669,10 @@ class ToyDiffusion(nn.Module):
 
         # Start from pure noise (batch, 1, D)
         z_t = torch.randn(num_samples, 1, self.input_dim, device=device)
-        timesteps = self._make_timesteps(0.0, 1.0, num_steps, num_samples, device)
+        # Start from 1/num_steps to avoid t=0 which causes division-by-zero
+        # when converting epsilon/v predictions to x0 (x0 = (z_t - (1-t)*eps) / t)
+        t_start = 1.0 / num_steps
+        timesteps = self._make_timesteps(t_start, 1.0, num_steps, num_samples, device)
 
         iterator = range(num_steps)
         if progress_bar:
@@ -707,7 +712,8 @@ class ToyDiffusion(nn.Module):
             num_steps = 100
 
         z_t = torch.randn(num_samples, 1, self.input_dim, device=device)
-        timesteps = self._make_timesteps(0.0, 1.0, num_steps, num_samples, device)
+        t_start = 1.0 / num_steps
+        timesteps = self._make_timesteps(t_start, 1.0, num_steps, num_samples, device)
 
         iterator = range(num_steps)
         if progress_bar:
