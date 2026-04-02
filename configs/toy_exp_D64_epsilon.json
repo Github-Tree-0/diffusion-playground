@@ -4,7 +4,7 @@
   "experiment_type": "toy",
 
   "model": {
-    "input_dim": 64,
+    "input_dim": 16,
     "base_channels": 64,
     "time_emb_dim": 128,
     "num_res_blocks": 2,
@@ -23,8 +23,8 @@
   },
 
   "dataset": {
-    "data_dir": "toy_data",
-    "embed_dim": 64,
+    "data_dir": "toy_data_spiral",
+    "embed_dim": 16,
     "seed": 42
   },
 
@@ -44,7 +44,7 @@
   },
 
   "training": {
-    "epochs": 100,
+    "epochs": 500,
     "gradient_accumulation_steps": 1,
     "max_grad_norm": 1.0,
     "mixed_precision": {
@@ -74,6 +74,6 @@
   "sampling": {
     "num_samples": 1000,
     "num_steps": 100,
-    "visualize_every_n_epochs": 10
+    "visualize_every_n_epochs": 25
   }
 }
